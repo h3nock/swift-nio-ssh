@@ -41,6 +41,29 @@ final class AESGCMTests: XCTestCase {
         self.buffer = nil
     }
 
+    func testAuthenticatedPacketTamperingIsRejected() throws {
+        for scheme: NIOSSHTransportProtection.Type in [AES128GCMOpenSSHTransportProtection.self, AES256GCMOpenSSHTransportProtection.self] {
+            for tamperPart in 0..<3 {
+                let keys = self.generateKeys(keySize: scheme.keySizes.encryptionKeySize == 16 ? .bits128 : .bits256)
+                let encryptor = try scheme.init(initialKeys: keys)
+                let decryptor = try scheme.init(initialKeys: keys.inverted)
+                var packet = ByteBufferAllocator().buffer(capacity: 128)
+                packet.writeSSHPacket(message: .newKeys, lengthEncrypted: false, blockSize: scheme.cipherBlockSize)
+                try encryptor.encryptPacket(&packet, sequenceNumber: 0)
+                // Corrupt associated length, ciphertext, or the GCM tag without changing the frame size.
+                let offset = [0, 4, packet.writerIndex - 1][tamperPart]
+                let old = try XCTUnwrap(packet.getInteger(at: offset, as: UInt8.self))
+                packet.setInteger(old ^ 1, at: offset)
+                XCTAssertThrowsError(try decryptor.decryptAndVerifyRemainingPacket(&packet, sequenceNumber: 0)) { error in
+                    switch error {
+                    case CryptoKitError.authenticationFailure: break
+                    default: XCTFail("Expected authenticated-decryption rejection, got \(error)")
+                    }
+                }
+            }
+        }
+    }
+
     func testSimpleAES128RoundTrip() throws {
         let initialKeys = self.generateKeys(keySize: .bits128)
 

@@ -127,11 +127,11 @@ class TestTransportProtection: NIOSSHTransportProtection {
         true
     }
 
-    static var cipherName: String {
+    class var cipherName: String {
         "insecure-tiny-encription-cipher"
     }
 
-    static var macName: String? {
+    class var macName: String? {
         nil
     }
 

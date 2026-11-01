@@ -369,6 +369,41 @@ final class SSHKeyExchangeStateMachineTests: XCTestCase {
         self.assertCompatibleProtection(client: clientInboundProtection, server: serverInboundProtection)
     }
 
+    func testAEADUnusedMACWireTamperingRejectsSignature() throws {
+        for scheme: NIOSSHTransportProtection.Type in [AES128GCMOpenSSHTransportProtection.self, AES256GCMOpenSSHTransportProtection.self] {
+            for tamperClient in [false, true] {
+                for clientToServer in [false, true] {
+                    var client = SSHKeyExchangeStateMachine(
+                        allocator: .init(), loop: EmbeddedEventLoop(),
+                        role: .client(.init(userAuthDelegate: ExplodingAuthDelegate(), serverAuthDelegate: AcceptAllHostKeysDelegate())),
+                        remoteVersion: Constants.version, protectionSchemes: [scheme], previousSessionIdentifier: nil)
+                    var server = SSHKeyExchangeStateMachine(
+                        allocator: .init(), loop: EmbeddedEventLoop(),
+                        role: .server(.init(hostKeys: [.init(ed25519Key: .init())], userAuthDelegate: DenyAllServerAuthDelegate())),
+                        remoteVersion: Constants.version, protectionSchemes: [scheme], previousSessionIdentifier: nil)
+                    let clientMessage = client.createKeyExchangeMessage()
+                    let serverMessage = server.createKeyExchangeMessage()
+                    client.send(keyExchange: clientMessage)
+                    server.send(keyExchange: serverMessage)
+                    // Change a MAC proposal in transit, AFTER the sender records the original transcript.
+                    var tampered = tamperClient ? clientMessage : serverMessage
+                    if clientToServer {
+                        tampered.macAlgorithmsClientToServer = ["hmac-sha2-512-etm@openssh.com"]
+                    } else {
+                        tampered.macAlgorithmsServerToClient = ["hmac-sha2-512-etm@openssh.com"]
+                    }
+                    try self.assertGeneratesNoMessage(server.handle(keyExchange: tamperClient ? tampered : clientMessage))
+                    let initMessage = try self.assertGeneratesECDHKeyExchangeInit(client.handle(keyExchange: tamperClient ? serverMessage : tampered))
+                    client.send(keyExchangeInit: initMessage)
+                    let reply = try self.assertGeneratesECDHKeyExchangeReplyAndNewKeys(server.handle(keyExchangeInit: initMessage))
+                    XCTAssertThrowsError(try client.handle(keyExchangeReply: reply)) { error in
+                        XCTAssertEqual((error as? NIOSSHError)?.type, .invalidExchangeHashSignature)
+                    }
+                }
+            }
+        }
+    }
+
     func testKeyExchange() throws {
         let allocator = ByteBufferAllocator()
         let loop = EmbeddedEventLoop()
@@ -1230,7 +1265,10 @@ final class SSHKeyExchangeStateMachineTests: XCTestCase {
         )
 
         // Both sides begin by generating a key exchange message.
-        let serverMessage = server.createKeyExchangeMessage()
+        var serverMessage = server.createKeyExchangeMessage()
+        // Exercise host-trust rejection after accepting disjoint, unused AEAD MAC proposals.
+        serverMessage.macAlgorithmsClientToServer = ["hmac-sha2-512-etm@openssh.com"]
+        serverMessage.macAlgorithmsServerToClient = ["hmac-sha2-256-etm@openssh.com"]
         let clientMessage = client.createKeyExchangeMessage()
         server.send(keyExchange: serverMessage)
         client.send(keyExchange: clientMessage)

@@ -81,15 +81,17 @@ class BackToBackEmbeddedChannel {
         try self.server.connect(to: .init(unixDomainSocketPath: "/fake")).wait()
     }
 
-    func configureWithHarness(_ harness: TestHarness) throws {
+    func configureWithHarness(_ harness: TestHarness, clientMaximumPacketSize: Int? = nil) throws {
+        var clientConfiguration = SSHClientConfiguration(
+            userAuthDelegate: harness.clientAuthDelegate,
+            serverAuthDelegate: harness.clientServerAuthDelegate,
+            globalRequestDelegate: harness.clientGlobalRequestDelegate
+        )
+        if let clientMaximumPacketSize {
+            clientConfiguration.maximumPacketSize = clientMaximumPacketSize
+        }
         let clientHandler = NIOSSHHandler(
-            role: .client(
-                .init(
-                    userAuthDelegate: harness.clientAuthDelegate,
-                    serverAuthDelegate: harness.clientServerAuthDelegate,
-                    globalRequestDelegate: harness.clientGlobalRequestDelegate
-                )
-            ),
+            role: .client(clientConfiguration),
             allocator: self.client.allocator,
             inboundChildChannelInitializer: nil
         )
